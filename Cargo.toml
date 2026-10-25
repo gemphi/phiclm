@@ -1,0 +1,9 @@
+[package]
+name = "phiclm"
+version = "0.1.0"
+edition = "2021"
+description = "Phi Compiler Language Model (CLM): BCPL's architecture as a Phinet crate — lexer, parser, trn to O-code, the word machine with ! and @, the global vector, and execution as the judge. CPL -> BCPL -> B -> C -> phiclm, the compiler the model thinks with."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+phiecs = { path = "../phiecs" }
