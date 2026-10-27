@@ -28,11 +28,14 @@ impl Program {
                 let operand = match op {
                     Op::Num(n) => n.to_string(),
                     Op::Str(i) => self.string.get(*i).cloned().unwrap_or_default(),
+                    Op::Table(i) => self.table.get(*i).map(|t| t.len().to_string()).unwrap_or_default(),
                     Op::Lp(k) | Op::Sp(k) | Op::Llp(k) | Op::Lg(k) | Op::Sg(k) => k.to_string(),
                     Op::Jump(t) | Op::Jf(t) | Op::Jt(t) => t.to_string(),
                     Op::Call { args, .. } => args.to_string(),
                     _ => String::new(),
                 };
+
+               // this is so cool
                 Row::new(owner(pc), op.name(), &operand)
             })
             .collect()

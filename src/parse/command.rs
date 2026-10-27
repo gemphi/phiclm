@@ -1,6 +1,7 @@
 //! The command grammar: blocks `$( … $)` or `{ … }`, the structured
-//! commands, and the two commands that start with an expression — an
-//! assignment and a routine call.
+//! commands, the labelled ones (`CASE k:`, `DEFAULT:`, `L:`), and the three
+//! that start with an expression — an assignment, a routine call, a label
+//! (`bcplfe.b:1955–2062`).
 
 use super::Parser;
 use crate::token::Token;
@@ -12,18 +13,31 @@ impl Parser {
         let mut c = self.bare()?;
         // The postfixed loops: `c REPEAT`, `c REPEATWHILE e`, `c REPEATUNTIL e`.
         loop {
-            if self.peek() == Some(&Token::Key("repeat")) {
-                self.at += 1;
-                c = Command::Repeat(Box::new(c));
-            } else if self.peek() == Some(&Token::Key("repeatwhile")) {
-                self.at += 1;
-                c = Command::RepeatWhile(Box::new(c), self.expression()?);
-            } else if self.peek() == Some(&Token::Key("repeatuntil")) {
-                self.at += 1;
-                c = Command::RepeatUntil(Box::new(c), self.expression()?);
-            } else {
-                return Ok(c);
+            match self.peek() {
+                Some(Token::Key("repeat")) => {
+                    self.at += 1;
+                    c = Command::Repeat(Box::new(c));
+                }
+                Some(Token::Key("repeatwhile")) => {
+                    self.at += 1;
+                    c = Command::RepeatWhile(Box::new(c), self.expression()?);
+                }
+                Some(Token::Key("repeatuntil")) => {
+                    self.at += 1;
+                    c = Command::RepeatUntil(Box::new(c), self.expression()?);
+                }
+                _ => return Ok(c),
             }
+        }
+    }
+
+    /// The command after a label — BCPL's `rbcom`: it may be empty, when the
+    /// label sits at the end of its block.
+    fn labelled(&mut self) -> Result<Command, String> {
+        self.seps();
+        match self.peek() {
+            None | Some(Token::Pun("$)")) | Some(Token::Pun("}")) => Ok(Command::Block(Vec::new())),
+            _ => self.command(),
         }
     }
 
@@ -39,15 +53,21 @@ impl Parser {
                         self.at += 1;
                         return Ok(Command::Block(body));
                     }
-                    if self.peek() == Some(&Token::Key("let")) {
-                        self.at += 1;
-                        let mut run = vec![self.declaration()?];
-                        while self.eat(&Token::Key("and")) {
-                            run.push(self.declaration()?);
+                    match self.peek() {
+                        Some(Token::Key("let")) => {
+                            self.at += 1;
+                            let mut run = self.declaration()?;
+                            while self.eat(&Token::Key("and")) {
+                                run.extend(self.declaration()?);
+                            }
+                            body.push(Element::Let(run));
                         }
-                        body.push(Element::Let(run));
-                    } else {
-                        body.push(Element::Do(self.command()?));
+                        Some(Token::Key(which @ ("manifest" | "static" | "global"))) => {
+                            let which: &'static str = *which;
+                            self.at += 1;
+                            body.push(Element::Let(vec![self.table(which)?]));
+                        }
+                        _ => body.push(Element::Do(self.command()?)),
                     }
                 }
             }
@@ -68,9 +88,11 @@ impl Parser {
                 let q = self.expression()?;
                 let _ = self.eat(&Token::Key("then")) || self.eat(&Token::Key("do"));
                 let yes = self.command()?;
-                self.seps();
-                self.expect(&Token::Key("else"))?;
-                Ok(Command::Test(q, Box::new(yes), Box::new(self.command()?)))
+                // `OR` is `ELSE` (`declsyswords`, `bcplfe.b:1082`).
+                match self.eat(&Token::Key("else")) || self.eat(&Token::Key("or")) {
+                    true => Ok(Command::Test(q, Box::new(yes), Box::new(self.command()?))),
+                    false => Err(format!("ELSE missing, found {:?}", self.peek())),
+                }
             }
             Some(Token::Key("while")) => {
                 self.at += 1;
@@ -115,15 +137,54 @@ impl Parser {
                 self.at += 1;
                 Ok(Command::Loop)
             }
-            _ => {
-                // An expression opens: `lhs := e`, or a routine call.
+            Some(Token::Key("switchon")) => {
+                self.at += 1;
                 let e = self.expression()?;
-                if self.eat(&Token::Pun(":=")) {
-                    Ok(Command::Assign(e, self.expression()?))
-                } else if matches!(e, Expression::Call(..)) {
-                    Ok(Command::Do(e))
-                } else {
-                    Err(format!("a command, not a value: {e:?}"))
+                self.expect(&Token::Key("into"))?;
+                self.seps();
+                match self.peek() {
+                    Some(Token::Pun("$(")) | Some(Token::Pun("{")) => Ok(Command::Switchon(e, Box::new(self.command()?))),
+                    other => Err(format!("SWITCHON … INTO needs a block, found {other:?}")),
+                }
+            }
+            Some(Token::Key("case")) => {
+                self.at += 1;
+                let k = self.expression()?;
+                self.expect(&Token::Pun(":")).map_err(|_| "Bad CASE label".to_string())?;
+                Ok(Command::Case(k, Box::new(self.labelled()?)))
+            }
+            Some(Token::Key("default")) => {
+                self.at += 1;
+                self.expect(&Token::Pun(":")).map_err(|_| "Bad DEFAULT label".to_string())?;
+                Ok(Command::Default(Box::new(self.labelled()?)))
+            }
+            Some(Token::Key("endcase")) => {
+                self.at += 1;
+                Ok(Command::Endcase)
+            }
+            Some(Token::Key("goto")) => {
+                self.at += 1;
+                Ok(Command::Goto(self.expression()?))
+            }
+            _ => {
+                // An expression opens: `lhs := e` or `a, b := x, y` (left to
+                // right, `bcplfe.b:3540`), a routine call, or `L:`.
+                let mut lhs = self.expressions()?;
+                match (self.eat(&Token::Pun(":=")), lhs.len()) {
+                    (true, 1) => Ok(Command::Assign(lhs.remove(0), self.expression()?)),
+                    (true, n) => {
+                        let rhs = self.expressions()?;
+                        match rhs.len() == n {
+                            true => Ok(Command::Block(lhs.into_iter().zip(rhs).map(|(l, r)| Element::Do(Command::Assign(l, r))).collect())),
+                            false => Err(format!("{n} places but {} values in an assignment", rhs.len())),
+                        }
+                    }
+                    (false, 1) => match lhs.remove(0) {
+                        Expression::Name(label) if self.eat(&Token::Pun(":")) => Ok(Command::Label(label, Box::new(self.labelled()?))),
+                        e @ Expression::Call(..) => Ok(Command::Do(e)),
+                        e => Err(format!("a command, not a value: {e:?}")),
+                    },
+                    (false, _) => Err("a list of values is not a command".into()),
                 }
             }
         }

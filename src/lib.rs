@@ -12,13 +12,17 @@
 //!
 //! | BCPL piece | here | what |
 //! |---|---|---|
+//! | `g/bcplfecg.h` | [`manifest`] | the one numbering; every token, tree node and op on it by `kind()` |
 //! | `declsyswords` + lexer | [`token`] | the closed vocabulary of structure; the ONE copy of `KEYWORDS` |
-//! | syntax analyser | [`parse`] | tokens → [`tree`] |
-//! | `trn` | [`trn`] | the tree → [`ocode`], BCPL's tiny stack intermediate |
-//! | `cinterp`/`cintsys` | [`machine`] | one word type, a linear store, P-frames, `!` and `@` |
-//! | BLIB + the global vector | [`global`] | `writef`, `writes`, `newline`, `writen`, `wrch` as negative entries |
+//! | syntax analyser | [`parse`] | tokens → [`tree`] by BCPL's own `rexp(n)` priorities |
+//! | `trn` | [`trn`] | the tree → [`ocode`], BCPL's tiny stack intermediate (55 ops) |
+//! | `cinterp`/`cintsys` | [`machine`] | one word type, a linear store, P-frames, `!` `%` and `@`, floats in words, a heap |
+//! | BLIB + the global vector | [`global`] | `writef` with BLIB's widths, the `write*` family, characters, strings, `getvec`, `rdch`/`readn`, `muldiv`, as negative entries |
 //! | — (docs/169 §4) | [`judge`] | execution as the judge: compile → run → [`judge::Verdict`] → rows |
 //! | — (docs/169 §3) | [`tell`] | the compiled O-code told as rows the student reads |
+//!
+//! Not ported (the README says why): the CG stage to Cintcode, `sys` and
+//! real files.
 //!
 //! ```
 //! let v = phiclm::judge::judge(
@@ -37,13 +41,14 @@ pub mod global;
 pub mod judge;
 pub mod machine;
 pub mod ocode;
+pub mod manifest;
 pub mod parse;
 pub mod tell;
 pub mod token;
 pub mod tree;
 pub mod trn;
 
-pub use judge::{compile, judge, Verdict};
+pub use judge::{compile, judge, judge_files, judge_with, Verdict};
 
 #[cfg(test)]
 mod tests;

@@ -1,8 +1,8 @@
 //! Commands to O-code: everything leaves the stack as it found it.
 
-use super::Trn;
+use super::{Binding, Trn};
 use crate::ocode::Op;
-use crate::tree::{Command, Declaration, Element, Expression};
+use crate::tree::{Command, Element, Expression};
 
 impl Trn {
     pub(super) fn command(&mut self, c: &Command) -> Result<(), String> {
@@ -12,36 +12,24 @@ impl Trn {
                 for e in body {
                     match e {
                         Element::Do(c) => self.command(c)?,
-                        Element::Let(run) => {
-                            for d in run {
-                                match d {
-                                    Declaration::Variable(name, e) => {
-                                        self.expression(e)?;
-                                        let at = self.free;
-                                        self.free += 1;
-                                        self.scope.push((name.clone(), at));
-                                        self.emit(Op::Sp(at));
-                                    }
-                                    Declaration::Manifest(rows) => self.constant.extend(rows.iter().cloned()),
-                                    other => return Err(format!("not a v1 local declaration: {other:?}")),
-                                }
-                            }
-                        }
+                        Element::Let(run) => self.declare(run)?,
                     }
                 }
                 self.scope.truncate(keep);
             }
+            Command::Assign(Expression::Dyad("of", f, p), e) => self.store_field(f, p, e)?,
             Command::Assign(lhs, e) => {
                 self.expression(e)?;
                 match lhs {
-                    Expression::Name(n) => match (self.local(n), self.program.global.get(n).copied()) {
-                        (Some(at), _) => {
+                    Expression::Name(n) => match self.lookup(n) {
+                        Some(Binding::Local(at)) => {
                             self.emit(Op::Sp(at));
                         }
-                        (_, Some(slot)) => {
+                        Some(Binding::Cell(slot)) => {
                             self.emit(Op::Sg(slot));
                         }
-                        _ => return Err(format!("assignment to unknown name {n}")),
+                        Some(Binding::Const(_) | Binding::Label) => return Err(format!("{n} is a constant: it cannot be assigned")),
+                        None => return Err(format!("assignment to unknown name {n}")),
                     },
                     Expression::Dyad("!", a, b) => {
                         self.expression(a)?;
@@ -52,6 +40,11 @@ impl Trn {
                     Expression::Monad("!", a) => {
                         self.expression(a)?;
                         self.emit(Op::Stind);
+                    }
+                    Expression::Dyad("%", a, b) => {
+                        self.expression(a)?;
+                        self.expression(b)?;
+                        self.emit(Op::Putbyte);
                     }
                     other => return Err(format!("not an lvalue: {other:?}")),
                 }
@@ -108,90 +101,57 @@ impl Trn {
                 if matches!(c, Command::Break) { breaks.push(at) } else { loops.push(at) }
                 self.emit(Op::Jump(0));
             }
+            Command::Switchon(e, body) => self.switch(e, body)?,
+            Command::Case(k, body) => {
+                let k = self.fold(k).ok_or_else(|| format!("CASE {k:?}: not a constant"))?;
+                let at = self.here();
+                let sw = self.switching.last_mut().ok_or("CASE label out of context")?;
+                if sw.case.iter().any(|(c, _)| *c == k) {
+                    return Err(format!("'CASE {k}:' occurs twice"));
+                }
+                sw.case.push((k, at));
+                self.command(body)?;
+            }
+            Command::Default(body) => {
+                let at = self.here();
+                let sw = self.switching.last_mut().ok_or("DEFAULT label out of context")?;
+                if sw.default.replace(at).is_some() {
+                    return Err("Bad DEFAULT label: it occurs twice".into());
+                }
+                self.command(body)?;
+            }
+            Command::Endcase => {
+                let at = self.here();
+                self.switching.last_mut().ok_or("Illegal use of ENDCASE")?.out.push(at);
+                self.emit(Op::Jump(0));
+            }
+            Command::Goto(e) => match (e, self.lookup_name(e)) {
+                (Expression::Name(label), Some(Binding::Label)) => {
+                    let at = self.emit(Op::Jump(0));
+                    self.goto.push((at, label.clone()));
+                }
+                (Expression::Name(label), None) => return Err(format!("GOTO {label}: no such label in this routine")),
+                (e, _) => {
+                    // A computed GOTO: the value is a label's address.
+                    self.expression(e)?;
+                    self.emit(Op::Goto);
+                }
+            },
+            Command::Label(label, body) => {
+                let at = self.here();
+                if self.label.insert(label.clone(), at).is_some() {
+                    return Err(format!("label {label} is set twice"));
+                }
+                self.command(body)?;
+            }
         }
         Ok(())
     }
 
-    /// A head-tested (or untested) loop: LOOP returns to the head.
-    fn headed(&mut self, head: Option<(&Expression, bool)>, body: &Command) -> Result<(), String> {
-        let top = self.here();
-        let mut out = None;
-        if let Some((q, flip)) = head {
-            self.expression(q)?;
-            out = Some(self.emit(if flip { Op::Jt(0) } else { Op::Jf(0) }));
+    pub(super) fn lookup_name(&self, e: &Expression) -> Option<Binding> {
+        match e {
+            Expression::Name(n) => self.lookup(n),
+            _ => None,
         }
-        self.looping.push((Vec::new(), Vec::new()));
-        self.command(body)?;
-        self.emit(Op::Jump(top));
-        let (breaks, loops) = self.looping.pop().expect("pushed");
-        if let Some(at) = out {
-            self.patch(at);
-        }
-        for at in breaks {
-            self.patch(at);
-        }
-        for at in loops {
-            self.program.op[at] = Op::Jump(top);
-        }
-        Ok(())
-    }
-
-    /// A tail-tested loop (`c REPEATWHILE e`): LOOP returns to the test.
-    fn tailed(&mut self, body: &Command, q: &Expression, flip: bool) -> Result<(), String> {
-        let top = self.here();
-        self.looping.push((Vec::new(), Vec::new()));
-        self.command(body)?;
-        let test = self.here();
-        self.expression(q)?;
-        self.emit(if flip { Op::Jf(top) } else { Op::Jt(top) });
-        let (breaks, loops) = self.looping.pop().expect("pushed");
-        for at in breaks {
-            self.patch(at);
-        }
-        for at in loops {
-            self.program.op[at] = Op::Jump(test);
-        }
-        Ok(())
-    }
-
-    /// `FOR v = a TO b BY k`: the limit held in a hidden slot, LOOP returns
-    /// to the increment.
-    fn counted(&mut self, var: &str, from: &Expression, to: &Expression, by: Option<&Expression>, body: &Command) -> Result<(), String> {
-        let step = match by {
-            None => 1,
-            Some(e) => self.fold(e).ok_or("FOR … BY needs a constant in v1")?,
-        };
-        self.expression(from)?;
-        let v = self.free;
-        self.free += 1;
-        self.scope.push((var.to_string(), v));
-        self.emit(Op::Sp(v));
-        self.expression(to)?;
-        let lim = self.free;
-        self.free += 1;
-        self.emit(Op::Sp(lim));
-        let top = self.here();
-        self.emit(Op::Lp(v));
-        self.emit(Op::Lp(lim));
-        self.emit(if step >= 0 { Op::Le } else { Op::Ge });
-        let out = self.emit(Op::Jf(0));
-        self.looping.push((Vec::new(), Vec::new()));
-        self.command(body)?;
-        let (breaks, loops) = self.looping.pop().expect("pushed");
-        let incr = self.here();
-        self.emit(Op::Lp(v));
-        self.emit(Op::Num(step));
-        self.emit(Op::Add);
-        self.emit(Op::Sp(v));
-        self.emit(Op::Jump(top));
-        self.patch(out);
-        for at in breaks {
-            self.patch(at);
-        }
-        for at in loops {
-            self.program.op[at] = Op::Jump(incr);
-        }
-        self.scope.pop();
-        Ok(())
     }
 }

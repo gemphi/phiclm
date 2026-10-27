@@ -1,4 +1,5 @@
-//! The conditions of satisfaction, fixed in docs/178 before the build.
+//! The conditions of satisfaction fixed in docs/178 before the build, and
+//! the rule that a broken source is a verdict, never a panic.
 
 use crate::judge::judge;
 
@@ -86,4 +87,21 @@ fn the_language_holds_together() {
         1_000_000,
     );
     assert_eq!(v.result, 200, "{:?}", v.error);
+}
+
+#[test]
+fn the_new_constructs_fail_as_verdicts() {
+    for (src, says) in [
+        ("LET start() = VALOF $( SWITCHON 1 INTO $( CASE 1: CASE 1: RESULTIS 0 $) $)", "occurs twice"),
+        ("LET start() = VALOF $( CASE 1: RESULTIS 0 $)", "out of context"),
+        ("LET start() BE ENDCASE", "ENDCASE"),
+        ("LET start() BE GOTO nowhere", "no such label"),
+        ("LET start() = VALOF $( LET x = 1\n RESULTIS (TABLE x)!0 $)", "constants"),
+        ("LET f() BE l: RETURN\nLET start() BE GOTO l", "no such label"),
+    ] {
+        let v = judge(src, 10_000);
+        assert!(!v.compiled, "{src}");
+        let e = v.error.unwrap_or_default();
+        assert!(e.contains(says), "{src}: {e}");
+    }
 }

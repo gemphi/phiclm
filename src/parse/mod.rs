@@ -5,15 +5,15 @@ mod command;
 mod expression;
 
 use crate::token::{lex, Token};
-use crate::tree::Declaration;
+use crate::tree::{Declaration, Expression, Rows};
 
 pub struct Parser {
     pub(crate) token: Vec<Token>,
     pub(crate) at: usize,
 }
 
-/// Parses a whole source: `SECTION`/`GET` tolerated and skipped, then the
-/// top-level `LET` declarations.
+/// Parses a whole source: `SECTION` and `NEEDS` read and skipped, `GET
+/// "libhdr"` as the header's manifests, then the top-level declarations.
 pub fn program(src: &str) -> Result<Vec<Declaration>, String> {
     let mut p = Parser { token: lex(src)?, at: 0 };
     let mut out = Vec::new();
@@ -21,16 +21,30 @@ pub fn program(src: &str) -> Result<Vec<Declaration>, String> {
         p.seps();
         match p.peek() {
             None => return Ok(out),
-            Some(Token::Key("section")) | Some(Token::Key("get")) => {
+            Some(Token::Key("section")) | Some(Token::Key("needs")) => {
                 p.at += 1;
                 p.seps();
                 if let Some(Token::Str(_)) = p.peek() {
                     p.at += 1;
                 }
             }
+            Some(Token::Key("get")) => {
+                p.at += 1;
+                p.seps();
+                match p.peek().cloned() {
+                    Some(Token::Str(file)) => {
+                        p.at += 1;
+                        if file.trim_end_matches(".h").ends_with("libhdr") {
+                            let rows = crate::global::LIBHDR.iter().map(|(n, k)| (n.to_string(), Some(Expression::Num(*k)))).collect();
+                            out.push(Declaration::Manifest(rows));
+                        }
+                    }
+                    other => return Err(format!("GET needs a file name, found {other:?}")),
+                }
+            }
             Some(Token::Key("let")) | Some(Token::Key("and")) => {
                 p.at += 1;
-                out.push(p.declaration()?);
+                out.extend(p.declaration()?);
             }
             Some(Token::Key("manifest")) => {
                 p.at += 1;
@@ -39,6 +53,10 @@ pub fn program(src: &str) -> Result<Vec<Declaration>, String> {
             Some(Token::Key("global")) => {
                 p.at += 1;
                 out.push(p.table("global")?);
+            }
+            Some(Token::Key("static")) => {
+                p.at += 1;
+                out.push(p.table("static")?);
             }
             Some(t) => return Err(format!("expected LET at top level, found {t:?}")),
         }
@@ -92,11 +110,13 @@ impl Parser {
         }
     }
 
-    /// A `MANIFEST`/`GLOBAL` block: `name = k` or `name: slot`, separated.
+    /// A `MANIFEST`/`GLOBAL`/`STATIC` block: `name = k` or `name: k`,
+    /// separated; `k` is a constant expression, folded by `trn`. A bare
+    /// `name` is the previous value plus one (`bcplfe.b:2524`).
     pub(crate) fn table(&mut self, which: &str) -> Result<Declaration, String> {
         self.seps();
         let close = if self.eat(&Token::Pun("$(")) { Token::Pun("$)") } else { self.expect(&Token::Pun("{"))?; Token::Pun("}") };
-        let mut rows = Vec::new();
+        let mut rows: Rows = Vec::new();
         loop {
             self.seps();
             if self.peek() == Some(&close) {
@@ -104,26 +124,22 @@ impl Parser {
                 break;
             }
             let name = self.name()?;
-            if !self.eat(&Token::Pun("=")) {
-                self.expect(&Token::Pun(":"))?;
-            }
-            self.seps();
-            match self.peek().cloned() {
-                Some(Token::Num(k)) => {
-                    self.at += 1;
-                    rows.push((name, k));
-                }
-                other => return Err(format!("{which} needs a constant, found {other:?}")),
-            }
+            let value = match self.eat(&Token::Pun("=")) || self.eat(&Token::Pun(":")) {
+                true => Some(self.expression()?),
+                false => None,
+            };
+            rows.push((name, value));
         }
         Ok(match which {
             "manifest" => Declaration::Manifest(rows),
-            _ => Declaration::Global(rows.into_iter().map(|(n, k)| (n, k as usize)).collect()),
+            "static" => Declaration::Static(rows),
+            _ => Declaration::Global(rows),
         })
     }
 
-    /// One `LET` item (the `LET`/`AND` keyword already taken).
-    pub(crate) fn declaration(&mut self) -> Result<Declaration, String> {
+    /// One `LET` item (the `LET`/`AND` keyword already taken): a function,
+    /// a routine, or `a, b, … = x, y, …` — one variable per name.
+    pub(crate) fn declaration(&mut self) -> Result<Vec<Declaration>, String> {
         let name = self.name()?;
         if self.eat(&Token::Pun("(")) {
             let mut params = Vec::new();
@@ -137,15 +153,23 @@ impl Parser {
                 self.expect(&Token::Pun(")"))?;
             }
             self.seps();
-            if self.eat(&Token::Key("be")) {
-                Ok(Declaration::Routine(name, params, self.command()?))
-            } else {
-                self.expect(&Token::Pun("="))?;
-                Ok(Declaration::Function(name, params, self.expression()?))
-            }
-        } else {
-            self.expect(&Token::Pun("="))?;
-            Ok(Declaration::Variable(name, self.expression()?))
+            return match self.eat(&Token::Key("be")) {
+                true => Ok(vec![Declaration::Routine(name, params, self.command()?)]),
+                false => {
+                    self.expect(&Token::Pun("="))?;
+                    Ok(vec![Declaration::Function(name, params, self.expression()?)])
+                }
+            };
+        }
+        let mut names = vec![name];
+        while self.eat(&Token::Pun(",")) {
+            names.push(self.name()?);
+        }
+        self.expect(&Token::Pun("="))?;
+        let values = self.expressions()?;
+        match values.len() == names.len() {
+            true => Ok(names.into_iter().zip(values).map(|(n, e)| Declaration::Variable(n, e)).collect()),
+            false => Err(format!("LET: {} names but {} values", names.len(), values.len())),
         }
     }
 }
