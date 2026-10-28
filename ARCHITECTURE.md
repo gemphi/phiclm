@@ -22,10 +22,14 @@ graph TD
         judge["judge.rs"]
         tell["tell.rs"]
     end
+    subgraph lispg["the Lisp — McCarthy's machine on Russell's algebra"]
+        lisp["lisp/<br/>mod · eval · prims · host · tests<br/>set/ mod · algebra"]
+    end
     manifest["manifest/<br/>mod · ops · tokens · nodes · tests"]
     tests["tests/<br/>core · control · data · syntax · blib · threads · streams"]
 
-    lib --> token & parse & tree & trn & ocode & machine & global & judge & tell & manifest
+    lib --> token & parse & tree & trn & ocode & machine & global & judge & tell & manifest & lisp
+    lisp -->|"(judge src)"| judge
     token --> parse --> tree --> trn --> ocode --> machine
     global --- machine
     machine --> judge --> tell
@@ -56,6 +60,7 @@ graph LR
     A --> J["judge.md<br/>judge.rs · tell.rs · tests/"]
     A --> C["bcpl.md<br/>BCPL, file for file"]
     A --> R["prose.md<br/>the corpus · two compilers"]
+    A --> LI["lisp/<br/>architecture · spec · plan · jobs"]
 ```
 
 | diagram | file |
@@ -69,7 +74,8 @@ graph LR
 | the judge | [docs/phiclm/judge.md](../../docs/phiclm/judge.md) |
 | BCPL, file for file | [docs/phiclm/bcpl.md](../../docs/phiclm/bcpl.md) |
 | prose and the two compilers | [docs/phiclm/prose.md](../../docs/phiclm/prose.md) |
+| the Lisp: architecture, spec, plan, jobs | [docs/phiclm/lisp/](../../docs/phiclm/lisp/architecture.md) |
 
 ## Status
 
-2026-10-27 · 38 tests + 1 doc test · every .rs file ≤ 200 lines · what is left: [TODO.md](TODO.md).
+2026-10-28 · 43 tests + 1 doc test · every .rs file ≤ 200 lines · what is left: [TODO.md](TODO.md).

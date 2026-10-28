@@ -39,6 +39,7 @@
 
 pub mod global;
 pub mod judge;
+pub mod lisp;
 pub mod machine;
 pub mod ocode;
 pub mod manifest;

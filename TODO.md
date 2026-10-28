@@ -40,3 +40,6 @@ graph LR
 ## with phiano
 - [ ] The guide's form rules (`-ing`, `-ed`, plurals) as BCPL over `s%i`, judged against the Key.
 - [ ] An instruction's program carries its arguments, not only its template's shape (docs/201).
+
+## lisp/
+- [x] Moved from phiano (`sys::lisp`, `sys::set`'s algebra): the reader, the values, the machine made generic over a `Host`, the 39 core primitives, the relation algebra; phiano's personas and scopes are its host (docs/phiclm/lisp/plan.md, jobs.md).
