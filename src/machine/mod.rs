@@ -44,10 +44,34 @@ pub(crate) struct Stream {
 const FLOOR: i64 = (MEMORY / 2) as i64;
 const ROOM: i64 = 256;
 
+/// Which declared cap stopped a run. A run that ended of its own accord, or
+/// on a fault of its own, reached neither and leaves this `None`; the judge
+/// carries it into the [`Verdict`](crate::judge::Verdict) as `capped`, so
+/// the cap that was reached is a value rather than a parsed error string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capped {
+    /// The step cap: the machine took as many steps as it was allowed.
+    Steps,
+    /// The wall-clock cap: the deadline passed before `start()` returned.
+    Seconds,
+}
+
+impl Capped {
+    /// The cap's name, as a record and a row say it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Capped::Steps => "steps",
+            Capped::Seconds => "seconds",
+        }
+    }
+}
+
 pub struct Machine {
     pub mem: Vec<i64>,
     pub out: String,
     pub steps: usize,
+    /// Which cap stopped the last run, when one did.
+    pub capped: Option<Capped>,
     /// Each string's address in the store.
     string: Vec<i64>,
     /// Each `TABLE`'s address in the store.
@@ -109,6 +133,7 @@ impl Machine {
             mem,
             out: String::new(),
             steps: 0,
+            capped: None,
             string,
             table,
             heap: MEMORY as i64,

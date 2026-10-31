@@ -4,12 +4,34 @@
 
 use super::arith::{binary, unary};
 use super::context::{Co, Context, Flow};
-use super::{Machine, GLOBAL, OUTSIDE};
+use super::{Capped, Machine, GLOBAL, OUTSIDE};
 use crate::ocode::{Op, Program};
+use std::time::Instant;
+
+/// How often the clock is read. `Instant::now()` costs more than an O-code
+/// step does, so a wall-clock cap is looked at once every this many steps
+/// rather than on each one: the cap is a guard against a program that will
+/// not stop, not a stopwatch.
+pub const CLOCK_EVERY: usize = 4_096;
 
 impl Machine {
-    /// Runs `start()` (the cintsys convention) for at most `limit` steps.
+    /// Runs `start()` (the cintsys convention) for at most `limit` steps,
+    /// with no clock watched.
     pub fn run(&mut self, program: &Program, limit: usize) -> Result<i64, String> {
+        self.run_until(program, limit, None)
+    }
+
+    /// As [`run`](Machine::run), stopping too when `deadline` has passed.
+    /// A run stopped by either cap leaves which one in
+    /// [`capped`](Machine::capped), so the judge names the cap it reached
+    /// rather than reading it back out of an error string.
+    pub fn run_until(
+        &mut self,
+        program: &Program,
+        limit: usize,
+        deadline: Option<Instant>,
+    ) -> Result<i64, String> {
+        self.capped = None;
         let slot = *program.global.get("start").ok_or("no start()")?;
         let entry = self.mem[slot];
         if entry <= 0 {
@@ -24,6 +46,12 @@ impl Machine {
         let mut cx = Context { p, pc: entry as usize, frames: vec![(p, 0)], ..Context::default() };
         while self.steps < limit {
             self.steps += 1;
+            if self.steps.is_multiple_of(CLOCK_EVERY)
+                && deadline.is_some_and(|d| Instant::now() >= d)
+            {
+                self.capped = Some(Capped::Seconds);
+                return Err(format!("out of time after {} steps", self.steps));
+            }
             let op = *program.op.get(cx.pc).ok_or("ran off the code")?;
             cx.pc += 1;
             match self.step(op, &mut cx, program)? {
@@ -31,6 +59,7 @@ impl Machine {
                 Flow::Done(v) => return Ok(v),
             }
         }
+        self.capped = Some(Capped::Steps);
         Err(format!("out of steps after {limit}"))
     }
 

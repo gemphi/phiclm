@@ -7,3 +7,10 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 phiecs = { path = "../phiecs" }
+
+# Test-only, and downward: phistd is the bottom of the workspace, so this
+# adds no normal edge and no cycle (R11.3 governs normal dependencies). The
+# judge's property test draws its source texts from `phistd::gen`, the
+# workspace's one seeded generator, so no outside crate is taken on.
+[dev-dependencies]
+phistd = { path = "../phistd" }

@@ -18,7 +18,7 @@
 //! | `trn` | [`trn`] | the tree → [`ocode`], BCPL's tiny stack intermediate (55 ops) |
 //! | `cinterp`/`cintsys` | [`machine`] | one word type, a linear store, P-frames, `!` `%` and `@`, floats in words, a heap |
 //! | BLIB + the global vector | [`global`] | `writef` with BLIB's widths, the `write*` family, characters, strings, `getvec`, `rdch`/`readn`, `muldiv`, as negative entries |
-//! | — (docs/169 §4) | [`judge`] | execution as the judge: compile → run → [`judge::Verdict`] → rows |
+//! | — (docs/169 §4) | [`judge`] | execution as the judge: compile → run under [`judge::Caps`] → [`judge::Verdict`] → rows |
 //! | — (docs/169 §3) | [`tell`] | the compiled O-code told as rows the student reads |
 //!
 //! Not ported (the README says why): the CG stage to Cintcode, `sys` and
@@ -36,6 +36,18 @@
 //! assert_eq!(v.result, 720);
 //! assert_eq!(v.out, "fact(5) = 120\n");
 //! ```
+//!
+//! Generated source — which may not stop, and may not be a program at all —
+//! goes to [`judge::judge_capped`], which holds a run to the declared
+//! [`judge::STEP_CAP`] and [`judge::SECONDS_CAP`] and names the cap it
+//! reached:
+//!
+//! ```
+//! let v = phiclm::judge_capped("LET start() = VALOF $( LET n = 0\n WHILE TRUE DO n := n + 1\n RESULTIS n $)");
+//! assert_eq!(v.capped, Some(phiclm::Cap::Steps));
+//! assert_eq!(v.steps, phiclm::STEP_CAP);
+//! assert!(!v.supported());
+//! ```
 
 pub mod global;
 pub mod judge;
@@ -50,6 +62,7 @@ pub mod tree;
 pub mod trn;
 
 pub use judge::{compile, judge, judge_files, judge_with, Verdict};
+pub use judge::{judge_capped, judge_under, Cap, Caps, SECONDS_CAP, STEP_CAP};
 
 #[cfg(test)]
 mod tests;
